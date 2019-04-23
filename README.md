@@ -1,2 +1,6 @@
 # GNSS-rinex-file-read
-读取rinex文件，计算卫星位置，计算接收机位置
+Read the rinex file, calculate the satellite position, and calculate the receiver position
+
+File Description:
+PositionSim.py:
+  I define the Sat Class in this file. and it include the function to read rinex file which describe the sats' orbits and the pseudorange of sats.
