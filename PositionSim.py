@@ -1,7 +1,6 @@
 import math
 import numpy as np
 import datetime
-import matplotlib.pylab as pl
 
 c = 299792458#299708539.6#
 u = 3.986004418e14
@@ -62,9 +61,9 @@ class Sat:
             E0 = E1
             E1 = Mk + self.e*math.sin(E0)
 
-        Ek = E1
-        vk = math.atan((1-self.e**2)**0.5*math.sin(Ek)/(math.cos(Ek)-self.e))
-        if(math.sin(Ek)*vk<0):
+        self.Ek = E1
+        vk = math.atan((1-self.e**2)**0.5*math.sin(self.Ek)/(math.cos(self.Ek)-self.e))
+        if(math.sin(self.Ek)*vk<0):
             if(vk>0):
                 vk -= math.pi
             else:
@@ -75,7 +74,7 @@ class Sat:
         rk1 = self.Crs*math.sin(2*phy) + self.Crc*math.cos(2*phy)
         ik1 = self.Cis*math.sin(2*phy) + self.Cic*math.cos(2*phy)
         uk = phy + uk1
-        rk = A*(1 - self.e*math.cos(Ek)) + rk1
+        rk = A*(1 - self.e*math.cos(self.Ek)) + rk1
         ik = self.i0 + self.IDOT*delt + ik1
         #计算轨道平面的位置
         xk = rk*math.cos(uk)
@@ -89,8 +88,11 @@ class Sat:
 
     def dtdisCal(self,t):
         # 计算卫星钟差
-        self.dt = self.a0 + self.a1*(t - self.toe) - self.tgd
+        F = -4.442807633e-10
+        deltat = F*self.e*self.sqrA*np.sin(self.Ek)
+        self.dt = self.a0 + self.a1*(t - self.toe) + self.a2*(t - self.toe) - self.tgd + deltat
         self.dtdis = c*self.dt
+        self.toe2 = self.toe - self.dt
 
 def messageRead(fname):
     #读取导航电文文件
@@ -124,11 +126,7 @@ def messageRead(fname):
 
     len1 = len(para)
 
-    #常数
-    u = 3.986004418e14
-    Omegae = 7.2921150e-5
 
-    pos = {}    #{'prn':[x,y,z]}
     p = []
     sats = []
     for i in range(len1):
@@ -151,7 +149,7 @@ def messageRead(fname):
         Cis     =   float(para[i][21].replace('D','e'))
         a0      =   float(para[i][7].replace('D','e'))
         a1      =   float(para[i][8].replace('D','e'))
-        a2      =   float(para[i][8].replace('D','e'))
+        a2      =   float(para[i][9].replace('D','e'))
         tgd     =   float(para[i][32].replace('D','e'))
         
         p.append([toe,sqrA,e,w,M0,Omega0,i0,n1,Omega1,IDOT,Cuc,Cus,Crc,Crs,Cic,Cis,a0,a1,a2,tgd,prn])
@@ -168,11 +166,6 @@ def odataRead(fname):
         l = fid.readline()
         if(l == ''):
             break;
-        if(l.find('APPROX POSITION XYZ') != -1):
-            t = l.split()
-            x = float(t[0])
-            y = float(t[1])
-            z = float(t[2])
 
         if(l.find('# / TYPES OF OBSERV') != -1):  
             i +=1
@@ -272,6 +265,7 @@ def odataRead(fname):
 
 def POS_cal(N,M,Xs,PseDis,X_int):
     #计算接收机坐标
+    N = len(Xs)
     Xr = np.array(X_int)
     Xs = np.array(Xs)
     G = np.zeros([N,M])
@@ -281,7 +275,7 @@ def POS_cal(N,M,Xs,PseDis,X_int):
             R = np.sqrt((Xr[0] - Xs[i,0])**2 + (Xr[1] - Xs[i,1])**2 + (Xr[2] - Xs[i,2])**2)
             G[i,:3] = (Xr[:3]-Xs[i,0:3])/R
             Bs[i] = PseDis[i] - R - Xr[3]
-            G[i,3] = 1
+            G[i,3] = 0.5
 
         GI = np.transpose(G)
         H = np.matmul(GI,G)
@@ -303,7 +297,6 @@ def POS_cal2(N,M,Xs,PseDis,X_int,W):
     Xs = np.array(Xs)
     G = np.zeros([N,M])
     Bs = np.zeros([N,1])
-    #W = np.eye(len(Xs))
     for j in range(100):
         for i in range(N):
             R = np.sqrt((Xr[0] - Xs[i,0])**2 + (Xr[1] - Xs[i,1])**2 + (Xr[2] - Xs[i,2])**2)
@@ -318,12 +311,7 @@ def POS_cal2(N,M,Xs,PseDis,X_int,W):
         B1 = np.matmul(W,Bs)
         BI = np.matmul(GI,B1)
         DeltaX = np.matmul(I,BI)
-        mid = np.median(DeltaX)
-        for ii in range(len(DeltaX)):
-            temp = abs(DeltaX[ii,0] - mid)
-            if(temp == 0 ):
-                temp = 0.01
-            #W[ii,ii] = 1/temp
+        
         result = Xr + np.transpose(DeltaX[:,0])
         MagX = np.sqrt(np.vdot(DeltaX[:,0],DeltaX[:,0]))
 
@@ -332,6 +320,7 @@ def POS_cal2(N,M,Xs,PseDis,X_int,W):
         else:
             Xr = result
     return Xr
+
 
 def highAngle(Xr,Xs):
     # 计算卫星高度角
@@ -345,125 +334,76 @@ def highAngle(Xr,Xs):
     a = a/np.pi*180
     return a
 
+def PDOPcal(Xs,Xr):
+    N = len(Xs)
+    G = np.mat(np.zeros([N,4]))
+    for i in range(N):
+        R = np.sqrt((Xr[0] - Xs[i,0])**2 + (Xr[1] - Xs[i,1])**2 + (Xr[2] - Xs[i,2])**2)
+        G[i,:3] = (Xr[:3]-Xs[i,0:3])/R
+        G[i,3] = 1
+    H = (G.T*G).I
+    PDOP = (H[1,1] + H[2,2] + H[3,3])**0.5
+    return PDOP
+    
 
-# def main():
-Mname = r'C:\Users\Xin\Desktop\毕设\数据收集\201900203\abmf002d.19n'
-#input('请输入卫星电文文件路径和文件名：')
-Oname = r'C:\Users\Xin\Desktop\毕设\数据收集\201900203\abmf002d.19o'
-#input('请输入观测文件文件路径和文件名：')
-sats = messageRead(Mname)
-T,dictOData,Xr = odataRead(Oname)
-Xr.append(0)
-# 开始解算
-XrMean = np.array([0.,0.,0.])
-ErDis = []
-ErDis2 = []
-for t in T:
-    satNew = sats
-    # 留下离t时刻最近的卫星
-    i = 0
-    while i < len(satNew) - 1:
-        j = i + 1
-        while j < len(satNew):
-            if satNew[i].prn == satNew[j].prn:
-                t1 = abs(t - satNew[i].toe)
-                t2 = abs(t - satNew[j].toe)
-                if(t1 < t2):
-                    del(satNew[j])
-                else:
-                    del(satNew[i])
-            j += 1
-        i += 1
-
-    for i in range(len(satNew)):
-        satNew[i].dtdisCal(t)
-        satNew[i].satPosCal(t)
-
-    PseDis = []
-    k = 0
-    Xs = np.zeros([1,3])
-    for i in dictOData[t][0]:
-        if('G' in i):   #观测文件中的GPS卫星
-            prn = int(i[1:])
-            for j in range(len(satNew)):
-                if(satNew[j].prn == prn):
-                    X = satNew[j].posArray()
-                    if(k == 0):
-                        Xs[0] += X
-                        k += 1
-                    else:
-                        Xs = np.vstack((Xs,X))
-                        k += 1
-
-                    dTdis = satNew[j].dtdis
-
-            if('P1' in dictOData[t][1][i]):
-                PseDis.append(dictOData[t][1][i]['P1'] + dTdis)
-            elif('P2' in dictOData[t][1][i]):
-                PseDis.append(dictOData[t][1][i]['P2'] + dTdis)
-            elif('C1' in dictOData[t][1][i]):
-                PseDis.append(dictOData[t][1][i]['C1'] + dTdis)
-            else:
-                print("ERROR！未找到测量值！\n")
-    W = np.eye(k)
-    for i in range(len(Xs)):
-        d = Xs[i,:] - Xr[0:3]
-        dis = np.linalg.norm(d)/100000
-        #h = highAngle(Xr,Xs[i])
-        W[i,i] = 1/dis
-
-
-
-    if(k > 4):
-        M = 4
-        N = k
+def satCheck(PseDis,Xr_cal,Xs):
+    Xr = Xr_cal
+    N = len(Xs)
+    d = np.mat(np.zeros([N,1]))
+    PseDis = np.array(PseDis)
+    Xr_new = np.broadcast_to(Xr[0:3],(N,3))
+    dd = Xr_new - Xs
+    for i in range(N):
+        dis = np.linalg.norm(dd[i,:])
+        d[i,0] = PseDis[i] - dis
+    dis = d
+    for i in range(2):
+        m = max(abs(d))
+        for j in range(len(d)):
+            if(abs(d[j,0]) == m):
+                d = np.vstack((d[:j,0],d[j+1:,0]))
+                Xs = np.vstack((Xs[:j,:],Xs[j+1:,:]))
+                PseDis = np.hstack((PseDis[0:j],PseDis[j+1:]))
+                break
         
-        Xr_real = Xr
-        X_int = np.array(Xr_real)
-        # print(Xs)
+    return Xs,PseDis,dis
 
-        Xr_cal = POS_cal(N,M,Xs,PseDis,X_int)
-        Xr_cal2 = POS_cal2(N,M,Xs,PseDis,X_int,W)
-        ErDis.append(np.linalg.norm(Xr_cal[0:3] - np.array(Xr[0:3])))
-        #print('时刻：',t,'\n','测距误差1:',ErDis)
-        ErDis2.append(np.linalg.norm(Xr_cal2[0:3] - np.array(Xr[0:3])))
-        #print('测距误差2:',ErDis2,'\n')
-
-
-    Xr_new = np.broadcast_to(Xr_real[0:3],(k,3))
-    d = (Xr_new - Xs)
-    dis = np.zeros([k,1])
-    high_angle = []
-    s = 0
-    print('实际坐标',Xr)
-    print('计算坐标',Xr_cal)
-    # for i in range(k):
-    #     high_angle.append(highAngle(Xr_real,Xs[i]))
-    #     print('高度角：',high_angle[i])
-         
-    #     dis[i] = np.linalg.norm(d[i,:])
-    #     s += abs(PseDis[i] - dis[i])
-    #     print('伪距误差：',PseDis[i] - dis[i])
-    #     print('伪距：',PseDis[i])
-
-ErDis = np.array(ErDis)
-ErDis2 = np.array(ErDis2)
-pl.figure(1)
-pl.plot(ErDis,color="blue")
-pl.plot(ErDis2,color="green")
-pl.show()
+def delHeightMin(PseDis,Xr,Xs):
+    N = len(Xs)
+    height = []
+    for i in range(N):
+        h = highAngle(Xr,Xs[i])
+        height.append(h)
+    
+    for i in range(2):
+        m = min(height)
+        for j in range(len(height)):
+            if(height[j] == m):
+                del(height[j])
+                Xs = np.vstack((Xs[:j,:],Xs[j+1:,:]))
+                PseDis = np.hstack((PseDis[0:j],PseDis[j+1:]))
+                break
+    return Xs,PseDis,height
 
 
+def xyz2lonlat(X):
+    # 直角坐标系换算经纬度
+    lon = math.atan(X[1]/X[0])
+    if(X[0] < 0):
+        lon += math.pi
+    if(lon < 0):
+        lon += 2*math.pi
+    
+    t = X[2]/math.sqrt(X[0]**2+X[1]**2)
+    lat = math.atan(t)
+    
+    r = np.linalg.norm(X)
+    return [r,lon,lat]
 
-
-
-
-
-
-
-
-
-
-
-
+def lonlat2xyz(X):
+    r,lon,lat = X
+    x = r * math.cos(lat)*math.cos(lon)
+    y = r * math.cos(lat)*math.sin(lon)
+    z = r * math.sin(lat)
+    return [x,y,z]
 
